@@ -1,0 +1,12 @@
+{
+  "name": "Tripmate · 广州行程",
+  "short_name": "Tripmate",
+  "description": "广州旅行规划与费用分摊",
+  "lang": "zh-CN",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f5f6f2",
+  "theme_color": "#183f49"
+    
+}
