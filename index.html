@@ -57,7 +57,47 @@
     } catch (err) {}
   }
   return x;
-}let db=load(),tab="dashboard",expenseView="shared",currentMemberSelection=readCurrentMemberSelection(),t=()=>db.trips.find(x=>x.id===db.active)||db.trips[0];function readCurrentMemberSelection(){try{let a=JSON.parse(localStorage.getItem(CMK)||"null");return a&&typeof a.tripId==="string"&&typeof a.memberId==="string"?a:null}catch(e){return null}}function setCurrentMember(memberId,x){currentMemberSelection={tripId:x.id,memberId:memberId};try{localStorage.setItem(CMK,JSON.stringify(currentMemberSelection))}catch(e){}return memberId}function ensureCurrentMember(x){let people=Array.isArray(x.people)?x.people:[];if(currentMemberSelection&&currentMemberSelection.tripId===x.id&&people.includes(currentMemberSelection.memberId))return currentMemberSelection.memberId;if(!people.length)return "";return setCurrentMember(people[0],x)}function personName(id,x){return x.personNames&&x.personNames[id]||id}function save(){localStorage.setItem(K,JSON.stringify(db));render()}function d(s,o){return new Intl.DateTimeFormat("zh-CN",Object.assign({timeZone:"UTC"},o)).format(new Date(s+"T12:00:00Z"))}function cash(n,c){let cfg=currencyInfo(c);return cfg.prefix+Number(n||0).toFixed(cfg.decimals)}function cv(n,c,exchangeRate){let amount=Number(n||0),cfg=currencyInfo(c);if(!cfg.needsRate)return amount;let rate=Number(exchangeRate);if(!(rate>0)&&c==="RMB")rate=Number(t().rate);return amount*(rate>0?rate:0)}function fmt(n){return"RM "+Number(n).toFixed(2)}
+}let db=load(),tab="dashboard",expenseView="shared",currentMemberSelection=readCurrentMemberSelection(),t=()=>db.trips.find(x=>x.id===db.active)||db.trips[0];function readCurrentMemberSelection(){try{let a=JSON.parse(localStorage.getItem(CMK)||"null");return a&&typeof a.tripId==="string"&&typeof a.memberId==="string"?a:null}catch(e){return null}}function setCurrentMember(memberId,x){currentMemberSelection={tripId:x.id,memberId:memberId};try{localStorage.setItem(CMK,JSON.stringify(currentMemberSelection))}catch(e){}return memberId}function ensureCurrentMember(x){let people=Array.isArray(x.people)?x.people:[];if(currentMemberSelection&&currentMemberSelection.tripId===x.id&&people.includes(currentMemberSelection.memberId))return currentMemberSelection.memberId;if(!people.length)return "";return setCurrentMember(people[0],x)}function personName(id,x){return x.personNames&&x.personNames[id]||id}let cloudSaveQueue = Promise.resolve();
+
+function save() {
+  localStorage.setItem(K, JSON.stringify(db));
+  render();
+
+  const trip = db.trips.find(x => x.id === db.active);
+  if (!trip || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(trip.id)) {
+    return;
+  }
+
+  const snapshot = JSON.parse(JSON.stringify(trip));
+
+  cloudSaveQueue = cloudSaveQueue
+    .then(async () => {
+      const client = window.tripmateSupabaseClient;
+      if (!client) throw new Error("Supabase 客户端尚未初始化");
+
+      const { data: authData, error: authError } =
+        await client.auth.getUser();
+
+      if (authError) throw authError;
+      if (!authData.user) throw new Error("请先登录 Supabase");
+
+      const { error } = await client
+        .from("trip_data")
+        .upsert({
+          trip_id: snapshot.id,
+          data: snapshot,
+          updated_at: new Date().toISOString()
+        }, {
+          onConflict: "trip_id"
+        });
+
+      if (error) throw error;
+    })
+    .catch(error => {
+      console.error("Tripmate 云端保存失败:", error);
+      toast("云端保存失败：" + (error.message || "未知错误"));
+    });
+}function d(s,o){return new Intl.DateTimeFormat("zh-CN",Object.assign({timeZone:"UTC"},o)).format(new Date(s+"T12:00:00Z"))}function cash(n,c){let cfg=currencyInfo(c);return cfg.prefix+Number(n||0).toFixed(cfg.decimals)}function cv(n,c,exchangeRate){let amount=Number(n||0),cfg=currencyInfo(c);if(!cfg.needsRate)return amount;let rate=Number(exchangeRate);if(!(rate>0)&&c==="RMB")rate=Number(t().rate);return amount*(rate>0?rate:0)}function fmt(n){return"RM "+Number(n).toFixed(2)}
 function balances(){let x={};t().people.forEach(p=>x[p]={paid:0,share:0,balance:0});t().expenses.forEach(e=>{let amount=Number(e.amount)||0,fundAmount=Math.max(0,Math.min(amount,Number(e.fundPaid)||0)),personal=cv(amount-fundAmount,e.currency,e.exchangeRate),count=(e.participants||[]).length;if(x[e.payer])x[e.payer].paid+=personal;if(count)(e.participants||[]).forEach(p=>{if(x[p])x[p].share+=personal/count})});t().people.forEach(p=>x[p].balance=x[p].paid-x[p].share);return x}function settles(){let b=balances(),debt=t().people.map(p=>({p,n:-b[p].balance})).filter(x=>x.n>.005),cred=t().people.map(p=>({p,n:b[p].balance})).filter(x=>x.n>.005),r=[],i=0,j=0;while(i<debt.length&&j<cred.length){let n=Math.min(debt[i].n,cred[j].n);r.push({a:debt[i].p,b:cred[j].p,n});debt[i].n-=n;cred[j].n-=n;if(debt[i].n<.005)i++;if(cred[j].n<.005)j++}return r}
 function settlementPayments(x){return x&&Array.isArray(x.settlementPayments)?x.settlementPayments:[]}function remainingBalances(x){let b=balances(),r={};x.people.forEach(p=>r[p]=b[p].balance);settlementPayments(x).forEach(c=>{let n=cv(c.amount,c.currency,c.exchangeRate);if(Object.prototype.hasOwnProperty.call(r,c.from))r[c.from]+=n;if(Object.prototype.hasOwnProperty.call(r,c.to))r[c.to]-=n});return r}function remainingSettles(x){let b=remainingBalances(x),debt=x.people.map(p=>({p,n:-b[p]})).filter(z=>z.n>.005),cred=x.people.map(p=>({p,n:b[p]})).filter(z=>z.n>.005),r=[],i=0,j=0;while(i<debt.length&&j<cred.length){let n=Math.min(debt[i].n,cred[j].n);r.push({a:debt[i].p,b:cred[j].p,n});debt[i].n-=n;cred[j].n-=n;if(debt[i].n<.005)i++;if(cred[j].n<.005)j++}return r}
 function settlementPaymentForm(old){let x=t();if(x.people.length<2){toast('至少需要两位成员才能记录结算付款');return}let e=old||{},selectedCurrency=CURRENCIES[e.currency]?e.currency:'MYR',selectedConfig=CURRENCIES[selectedCurrency],from=e.from||x.people[0],to=e.to||x.people[1],currencyOptions=Object.keys(CURRENCIES).map(c=>'<option value="'+c+'" '+(selectedCurrency===c?'selected':'')+'>'+CURRENCIES[c].label+'</option>').join(''),memberOptions=(field,defaultId)=>x.people.map(p=>'<option value="'+esc(p)+'" '+((e[field]||defaultId)===p?'selected':'')+'>'+esc(personName(p,x))+'</option>').join('');modal(old?'编辑结算付款':'记录结算付款','<div class="field"><label>日期</label><input name="date" type="date" required value="'+(e.date||todayISO())+'"></div><div class="field"><label>付款人</label><select name="from" required>'+memberOptions('from',from)+'</select></div><div class="field"><label>收款人</label><select name="to" required>'+memberOptions('to',to)+'</select></div><div class="field"><label>金额</label><input name="amount" type="number" min=".01" step=".01" required value="'+(e.amount==null?'':esc(e.amount))+'"></div><div class="field"><label>币种</label><select name="currency">'+currencyOptions+'</select></div><div class="field" id="settlementRateField"'+(selectedConfig.needsRate?'':' style="display:none"')+'><label>汇率（1 <span id="settlementRateCurrency">'+selectedConfig.label+'</span> = RM）</label><input id="settlementRate" name="exchangeRate" type="number" min=".0001" step=".0001" value="'+(selectedConfig.needsRate?(Number(e.exchangeRate)>0?Number(e.exchangeRate):(selectedCurrency==='RMB'?(Number(x.rate)||.65):'')):'')+'"'+(selectedConfig.needsRate?' required':' disabled')+'></div><div class="field wide"><label>备注</label><input name="note" value="'+esc(e.note||'')+'"></div>',z=>{let a=Object.fromEntries(z);a.id=e.id||uid();a.date=z.get('date')||todayISO();a.amount=Number(a.amount);if(!a.from||!a.to||a.from===a.to){toast('付款人和收款人不能相同');return}if(!Number.isFinite(a.amount)||a.amount<=0){toast('请输入大于 0 的有效金额');return}if(currencyInfo(a.currency).needsRate){a.exchangeRate=Number(z.get('exchangeRate'));if(!Number.isFinite(a.exchangeRate)||a.exchangeRate<=0){toast('请输入有效汇率');return}}else delete a.exchangeRate;x.settlementPayments=Array.isArray(x.settlementPayments)?x.settlementPayments:[];if(old)Object.assign(old,a);else x.settlementPayments.push(a);q('#dlg').close();save()});let f=q('#form'),field=q('#settlementRateField'),input=q('#settlementRate'),label=q('#settlementRateCurrency'),last=selectedCurrency,sync=()=>{let c=f.elements.currency.value,cfg=currencyInfo(c),changed=c!==last;field.style.display=cfg.needsRate?'':'none';input.disabled=!cfg.needsRate;input.required=cfg.needsRate;label.textContent=cfg.label;if(!cfg.needsRate)input.value='';else if(changed)input.value=c==='RMB'?x.rate:'';else if(!input.value&&c==='RMB')input.value=x.rate;last=c};f.onchange=sync;sync()}
@@ -75,7 +115,128 @@ async function registerWithEmail(){let f=q("#form");if(!f.reportValidity())retur
 function openAuthDialog(){modal("登录 / 注册",'<div class="field wide"><label>Email</label><input name="email" type="email" required autocomplete="email"></div><div class="field wide"><label>Password</label><input name="password" type="password" required autocomplete="current-password"></div><div class="field wide"><button type="button" class="btn" id="authRegister">注册</button></div>',signInWithEmail);let f=q("#form");f.querySelector(".actions .btn.primary").textContent="登录";q("#authRegister").onclick=registerWithEmail}
 async function signOutFromSupabase(){let{error}=await window.tripmateSupabaseClient.auth.signOut();if(error){toast(error.message);return}toast("已登出")}
 let supabaseTripsTestedUsers=new Set();
-async function testSupabaseTrips(){let{data,error}=await window.tripmateSupabaseClient.auth.getUser();if(error){console.error("[Tripmate Supabase Test] Auth error:",error);return}let user=data&&data.user;if(!user){console.info("[Tripmate Supabase Test] No logged-in user");return}if(supabaseTripsTestedUsers.has(user.id))return;supabaseTripsTestedUsers.add(user.id);console.log("[Tripmate Supabase Test] Logged-in user:",user.id,user.email||"");let{data:trips,error:tripsError}=await window.tripmateSupabaseClient.from("trips").select("id,name,created_at,created_by").eq("created_by",user.id);if(tripsError){console.error("[Tripmate Supabase Test] Trips query error details:");console.log("error.message:",tripsError.message);console.log("error.code:",tripsError.code);console.log("error.details:",tripsError.details);console.log("error.hint:",tripsError.hint);console.log("error.status:",tripsError.status);return}console.log("[Tripmate Supabase Test] Trips:",trips)}async function testSupabaseTripInsert(){const showResult=(title,details)=>{let box=document.getElementById("supabaseInsertTestResult");if(!box){box=document.createElement("pre");box.id="supabaseInsertTestResult";Object.assign(box.style,{position:"fixed",left:"12px",right:"12px",bottom:"12px",zIndex:"9999",maxHeight:"40vh",overflow:"auto",whiteSpace:"pre-wrap",wordBreak:"break-word",margin:"0",padding:"12px",borderRadius:"10px",background:"#193b35",color:"white",boxShadow:"0 4px 18px #0003"});document.body.appendChild(box)}box.textContent=title+"\n"+details};let{data,error}=await window.tripmateSupabaseClient.auth.getUser();if(error){let fields={message:error.message,code:error.code,details:error.details,hint:error.hint,status:error.status};console.error("[Tripmate Supabase Test] Auth error:",error);showResult("Supabase Insert Test: ERROR",JSON.stringify(fields,null,2));return}if(!data||!data.user){console.error("[Tripmate Supabase Test] No logged-in user");showResult("Supabase Insert Test: ERROR","No logged-in user");return}let{data:row,error:insertError}=await window.tripmateSupabaseClient.from("trips").insert({name:"Supabase Sync Test",created_by:data.user.id}).select().single();if(insertError){let fields={message:insertError.message,code:insertError.code,details:insertError.details,hint:insertError.hint,status:insertError.status};console.error("[Tripmate Supabase Test] Insert error:",fields);showResult("Supabase Insert Test: ERROR",JSON.stringify(fields,null,2));return}console.log("[Tripmate Supabase Test] Insert success:",row);showResult("Supabase Insert Test: SUCCESS",JSON.stringify(row,null,2))}window.testSupabaseTripInsert=testSupabaseTripInsert;async function initSupabaseAuth(){q("#authButton").onclick=()=>{if(!authSession)openAuthDialog()};q("#authLogout").onclick=signOutFromSupabase;window.tripmateSupabaseClient.auth.onAuthStateChange((event,session)=>{renderAuthState(session);if(event==="SIGNED_IN"&&session&&session.user)testSupabaseTrips()});let{data,error}=await window.tripmateSupabaseClient.auth.getSession();if(error){renderAuthState(null);toast(error.message);return}renderAuthState(data.session);if(data.session&&data.session.user)testSupabaseTrips();else console.info("[Tripmate Supabase Test] No logged-in user")}
+async function testSupabaseTrips(){let{data,error}=await window.tripmateSupabaseClient.auth.getUser();if(error){console.error("[Tripmate Supabase Test] Auth error:",error);return}let user=data&&data.user;if(!user){console.info("[Tripmate Supabase Test] No logged-in user");return}if(supabaseTripsTestedUsers.has(user.id))return;supabaseTripsTestedUsers.add(user.id);console.log("[Tripmate Supabase Test] Logged-in user:",user.id,user.email||"");let{data:trips,error:tripsError}=await window.tripmateSupabaseClient.from("trips").select("id,name,created_at,created_by").eq("created_by",user.id);if(tripsError){console.error("[Tripmate Supabase Test] Trips query error details:");console.log("error.message:",tripsError.message);console.log("error.code:",tripsError.code);console.log("error.details:",tripsError.details);console.log("error.hint:",tripsError.hint);console.log("error.status:",tripsError.status);return}console.log("[Tripmate Supabase Test] Trips:",trips)}async function testSupabaseTripInsert(){const showResult=(title,details)=>{let box=document.getElementById("supabaseInsertTestResult");if(!box){box=document.createElement("pre");box.id="supabaseInsertTestResult";Object.assign(box.style,{position:"fixed",left:"12px",right:"12px",bottom:"12px",zIndex:"9999",maxHeight:"40vh",overflow:"auto",whiteSpace:"pre-wrap",wordBreak:"break-word",margin:"0",padding:"12px",borderRadius:"10px",background:"#193b35",color:"white",boxShadow:"0 4px 18px #0003"});document.body.appendChild(box)}box.textContent=title+"\n"+details};let{data,error}=await window.tripmateSupabaseClient.auth.getUser();if(error){let fields={message:error.message,code:error.code,details:error.details,hint:error.hint,status:error.status};console.error("[Tripmate Supabase Test] Auth error:",error);showResult("Supabase Insert Test: ERROR",JSON.stringify(fields,null,2));return}if(!data||!data.user){console.error("[Tripmate Supabase Test] No logged-in user");showResult("Supabase Insert Test: ERROR","No logged-in user");return}let{data:row,error:insertError}=await window.tripmateSupabaseClient.from("trips").insert({name:"Supabase Sync Test",created_by:data.user.id}).select().single();if(insertError){let fields={message:insertError.message,code:insertError.code,details:insertError.details,hint:insertError.hint,status:insertError.status};console.error("[Tripmate Supabase Test] Insert error:",fields);showResult("Supabase Insert Test: ERROR",JSON.stringify(fields,null,2));return}console.log("[Tripmate Supabase Test] Insert success:",row);showResult("Supabase Insert Test: SUCCESS",JSON.stringify(row,null,2))}window.testSupabaseTripInsert=testSupabaseTripInsert;
+
+async function loadCloudTrips() {
+  const client = window.tripmateSupabaseClient;
+  if (!client) {
+    toast("Supabase 尚未初始化");
+    return;
+  }
+
+  try {
+    const { data: authData, error: authError } =
+      await client.auth.getUser();
+
+    if (authError) throw authError;
+
+    if (!authData.user) {
+      toast("请先登录");
+      return;
+    }
+
+    const { data: tripRows, error: tripsError } =
+      await client
+        .from("trips")
+        .select("id,name,start_date,end_date,rate,created_at,created_by");
+
+    if (tripsError) throw tripsError;
+
+    const { data: cloudRows, error: cloudError } =
+      await client
+        .from("trip_data")
+        .select("trip_id,data,updated_at");
+
+    if (cloudError) throw cloudError;
+
+    const cloudById = new Map(
+      (cloudRows || []).map(row => [row.trip_id, row.data])
+    );
+
+    const normaliseTrip = (row) => {
+      const cloud = cloudById.get(row.id);
+
+      if (cloud && typeof cloud === "object") {
+        return { ...cloud, id: row.id };
+      }
+
+      return {
+        id: row.id,
+        name: row.name || "未命名行程",
+        start: row.start_date || "",
+        end: row.end_date || "",
+        people: [],
+        personNames: {},
+        rate: Number(row.rate) || 0.65,
+        events: [],
+        expenses: [],
+        settlementPayments: [],
+        fund: { contributions: [] },
+        coverPhoto: "",
+        checklist: [],
+        personalExpenses: []
+      };
+    };
+
+    const remoteTrips = (tripRows || []).map(normaliseTrip);
+    const localTrips = db.trips.filter(
+      trip => !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(trip.id)
+    );
+
+    db.trips = [
+      ...localTrips,
+      ...remoteTrips
+    ];
+
+    if (!db.trips.some(trip => trip.id === db.active)) {
+      db.active = remoteTrips[0]?.id || localTrips[0]?.id;
+    }
+
+    localStorage.setItem(K, JSON.stringify(db));
+    render();
+
+    toast("已读取云端行程");
+  } catch (error) {
+    console.error("读取云端行程失败:", error);
+    toast("读取云端行程失败：" + (error.message || "未知错误"));
+  }
+}
+async function initSupabaseAuth() {
+  q("#authButton").onclick = () => {
+    if (!authSession) openAuthDialog();
+  };
+
+  q("#authLogout").onclick = signOutFromSupabase;
+
+  window.tripmateSupabaseClient.auth.onAuthStateChange(
+    (event, session) => {
+      renderAuthState(session);
+
+      if (event === "SIGNED_IN" && session && session.user) {
+        testSupabaseTrips();
+        loadCloudTrips();
+      }
+    }
+  );
+
+  const { data, error } =
+    await window.tripmateSupabaseClient.auth.getSession();
+
+  if (error) {
+    renderAuthState(null);
+    toast(error.message);
+    return;
+  }
+
+  renderAuthState(data.session);
+
+  if (data.session && data.session.user) {
+    testSupabaseTrips();
+    await loadCloudTrips();
+  } else {
+    console.info("[Tripmate Supabase Test] No logged-in user");
+  }
+}
 function modal(title,html,fn){let f=q("#form");f.innerHTML='<div class="modalhead"><b>'+title+'</b><button type="button" data-close>×</button></div><div class="grid">'+html+'</div><div class="actions"><button type="button" data-close>取消</button><button class="btn primary">保存</button></div>';q("#dlg").showModal();f.onsubmit=e=>{e.preventDefault();fn(new FormData(f))};qa("[data-close]").forEach(z=>z.onclick=()=>q("#dlg").close())}
 function eventForm(old){let x=t(),e=old||{};modal(old?"编辑安排":"添加行程安排",'<div class="field wide"><label>标题</label><input name="title" required value="'+esc(e.title)+'"></div><div class="field"><label>日期</label><input name="date" type="date" required value="'+(e.date||x.start)+'"></div><div class="field"><label>时间</label><input name="time" type="time" value="'+(e.time||"")+'"></div><div class="field wide"><label>地点</label><input name="location" value="'+esc(e.location)+'"></div><div class="field wide"><label>🔄 备选</label><textarea name="alternative">'+esc(e.alternative||"")+'</textarea></div><div class="field wide"><label>备注</label><textarea name="notes">'+esc(e.notes)+'</textarea></div>',z=>{let a=Object.fromEntries(z);if(old)Object.assign(old,a);else x.events.push(Object.assign(a,{id:uid()}));q("#dlg").close();save()})}
 function compressReceiptPhoto(file){return new Promise((resolve,reject)=>{let url=URL.createObjectURL(file),img=new Image;img.onload=()=>{try{let width=img.naturalWidth||img.width,height=img.naturalHeight||img.height,scale=Math.min(1,1200/Math.max(width,height)),canvas=document.createElement("canvas");canvas.width=Math.max(1,Math.round(width*scale));canvas.height=Math.max(1,Math.round(height*scale));let ctx=canvas.getContext("2d");if(!ctx)throw new Error("无法处理图片");ctx.drawImage(img,0,0,canvas.width,canvas.height);resolve(canvas.toDataURL("image/jpeg",.78))}catch(err){reject(err)}finally{URL.revokeObjectURL(url)}};img.onerror=()=>{URL.revokeObjectURL(url);reject(new Error("无法读取图片"))};img.src=url})}function expenseViewTabs(view){return '<div class="actions" style="margin:0 0 12px"><button type="button" class="btn '+(view==="shared"?"primary":"")+'" data-expense-view="shared">🧾 共同开销</button><button type="button" class="btn '+(view==="personal"?"primary":"")+'" data-expense-view="personal">👤 个人开销</button></div>'}
